@@ -1,0 +1,313 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from uuid import UUID
+
+from app.database import get_db
+from app.models.lesson import Lesson
+from app.models.course import Course, Module
+from app.models.user import User, UserRole
+from app.models.enrollment import Enrollment
+from app.models.quiz import Quiz, QuizQuestion, QuizAttempt, QuestionType
+from app.views.quiz import (
+    QuizCreate,
+    QuizRead,
+    QuizQuestionCreate,
+    QuizQuestionRead,
+    QuizAIRequest,
+    QuizSubmitRequest,
+    QuizAttemptRead,
+    QuizAttemptGrade,
+    QuizAttemptWithStudent,
+)
+from app.utils.deps import get_current_active_user
+from app.services.ai_service import ai_service
+from app.controllers.stats import push_user_stats
+
+router = APIRouter()
+
+def _check_quiz_permissions(db: Session, user: User, lesson_id: UUID, require_instructor: bool = False):
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+
+    course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    is_owner = course.instructor_id == user.id
+    is_admin = user.role == UserRole.ADMIN
+    
+    if require_instructor:
+        if not (is_owner or is_admin):
+            raise HTTPException(status_code=403, detail="Only instructors can manage quizzes")
+    else:
+        is_enrolled = db.query(Enrollment).filter(
+            Enrollment.student_id == user.id,
+            Enrollment.course_id == course.id,
+            Enrollment.is_active == True,
+        ).first() is not None
+        if not (is_owner or is_admin or is_enrolled or lesson.is_preview):
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+    return lesson, course
+
+@router.post("/", response_model=QuizRead, status_code=status.HTTP_201_CREATED)
+def create_manual_quiz(
+    quiz_in: QuizCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Create a quiz manually with specific questions.
+    """
+    _check_quiz_permissions(db, current_user, quiz_in.lesson_id, require_instructor=True)
+    
+    # Check if quiz already exists for this lesson
+    existing = db.query(Quiz).filter(Quiz.lesson_id == quiz_in.lesson_id).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+
+    db_quiz = Quiz(
+        lesson_id=quiz_in.lesson_id,
+        title=quiz_in.title,
+        description=quiz_in.description
+    )
+    db.add(db_quiz)
+    db.commit()
+    db.refresh(db_quiz)
+
+    for i, q in enumerate(quiz_in.questions):
+        db_q = QuizQuestion(
+            quiz_id=db_quiz.id,
+            question_text=q.question_text,
+            question_type=q.question_type,
+            question_data=q.question_data,
+            explanation=q.explanation,
+            order=q.order or i
+        )
+        db.add(db_q)
+    
+    db.commit()
+    db.refresh(db_quiz)
+    return db_quiz
+
+@router.post("/generate", response_model=QuizRead)
+async def generate_ai_quiz(
+    request: QuizAIRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Generate a quiz using Mistral AI based on lesson content.
+    """
+    lesson, course = _check_quiz_permissions(db, current_user, request.lesson_id, require_instructor=True)
+    
+    # Context gathering logic: Use lesson content, fall back to course info
+    context_text = lesson.content_data
+    if not context_text or len(context_text.strip()) < 10:
+        # If lesson has no text, try to build context from course title/description
+        context_text = f"Subject: {course.title}. Description: {course.description}. Lesson Title: {lesson.title}"
+        
+    if not context_text or len(context_text.strip()) < 5:
+        raise HTTPException(
+            status_code=400, 
+            detail="Lesson has no text content and course description is empty. Cannot generate quiz."
+        )
+
+    # Generate questions using AI
+    try:
+        questions_data = await ai_service.generate_quiz(context_text, request.num_questions)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Mistral AI failed to generate quiz: {str(e)}")
+    
+    # Create the quiz
+    existing = db.query(Quiz).filter(Quiz.lesson_id == request.lesson_id).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+
+    db_quiz = Quiz(
+        lesson_id=request.lesson_id,
+        title=f"AI Quiz: {lesson.title}",
+        description="Automatically generated by Mistral AI"
+    )
+    db.add(db_quiz)
+    db.commit()
+    db.refresh(db_quiz)
+
+    for i, q_data in enumerate(questions_data):
+        db_q = QuizQuestion(
+            quiz_id=db_quiz.id,
+            question_text=q_data["question"],
+            question_type=q_data["type"],
+            question_data=q_data["data"],
+            explanation=q_data.get("explanation"),
+            order=i
+        )
+        db.add(db_q)
+    
+    db.commit()
+    db.refresh(db_quiz)
+    return db_quiz
+
+@router.get("/lesson/{lesson_id}", response_model=Optional[QuizRead])
+def get_quiz_for_lesson(
+    lesson_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    _check_quiz_permissions(db, current_user, lesson_id)
+    return db.query(Quiz).filter(Quiz.lesson_id == lesson_id).first()
+
+@router.post("/submit", response_model=QuizAttemptRead)
+async def submit_quiz_attempt(
+    request: QuizSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    quiz = db.query(Quiz).filter(Quiz.id == request.quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    
+    _check_quiz_permissions(db, current_user, quiz.lesson_id)
+    
+    # Check for existing attempt
+    existing_attempt = db.query(QuizAttempt).filter(
+        QuizAttempt.quiz_id == quiz.id,
+        QuizAttempt.student_id == current_user.id
+    ).first()
+    if existing_attempt:
+        raise HTTPException(status_code=400, detail="You have already submitted this quiz.")
+    
+    questions = {str(q.id): q for q in quiz.questions}
+    results = []
+    correct_count = 0
+    
+    for user_ans in request.answers:
+        q_id = str(user_ans.question_id)
+        if q_id not in questions:
+            continue
+            
+        q = questions[q_id]
+        is_correct = False
+        
+        if q.question_type == QuestionType.MULTIPLE_CHOICE:
+            is_correct = user_ans.answer == q.question_data.get("correct_index")
+        elif q.question_type == QuestionType.FILL_IN_THE_BLANKS or q.question_type == QuestionType.OBJECTIVE:
+            # Simple string comparison (case-insensitive)
+            expected = str(q.question_data.get("answer", "")).lower().strip()
+            provided = str(user_ans.answer).lower().strip()
+            is_correct = provided == expected
+        elif q.question_type == QuestionType.ESSAY:
+            # Essays are always "correct" for now (or need manual grading)
+            is_correct = True
+            
+        if is_correct:
+            correct_count += 1
+            
+        results.append({
+            "question_id": q_id,
+            "user_answer": user_ans.answer,
+            "is_correct": is_correct,
+            "explanation": q.explanation
+        })
+        
+    score = (correct_count / len(questions)) * 100 if questions else 0
+    
+    attempt = QuizAttempt(
+        student_id=current_user.id,
+        quiz_id=quiz.id,
+        score=score,
+        total_points=len(questions),
+        answers=results
+    )
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+
+    # Push real-time stats update
+    await push_user_stats(db, UUID(str(current_user.id)))
+    
+    return attempt
+
+@router.get("/attempts/{quiz_id}/me", response_model=List[QuizAttemptRead])
+def get_my_attempts(
+    quiz_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    return db.query(QuizAttempt).filter(
+        QuizAttempt.quiz_id == quiz_id,
+        QuizAttempt.student_id == current_user.id
+    ).order_by(QuizAttempt.completed_at.desc()).all()
+
+@router.get("/{quiz_id}/attempts", response_model=List[QuizAttemptWithStudent])
+def get_quiz_attempts(
+    quiz_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all student attempts for a specific quiz. Instructor/Admin only.
+    """
+    quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    
+    _check_quiz_permissions(db, current_user, quiz.lesson_id, require_instructor=True)
+    
+    attempts = db.query(QuizAttempt).filter(QuizAttempt.quiz_id == quiz_id).all()
+    
+    results = []
+    for a in attempts:
+        # Create a dict from the SQLAlchemy object and add student info
+        attempt_dict = {
+            "id": a.id,
+            "student_id": a.student_id,
+            "quiz_id": a.quiz_id,
+            "score": a.score,
+            "total_points": a.total_points,
+            "answers": a.answers,
+            "instructor_feedback": a.instructor_feedback,
+            "completed_at": a.completed_at,
+            "student_name": a.student.full_name or a.student.email if a.student else "Unknown",
+            "student_email": a.student.email if a.student else "Unknown"
+        }
+        results.append(QuizAttemptWithStudent.model_validate(attempt_dict))
+        
+    return results
+
+@router.patch("/attempts/{attempt_id}/grade", response_model=QuizAttemptRead)
+def grade_quiz_attempt(
+    attempt_id: UUID,
+    grade_in: QuizAttemptGrade,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Manually grade or provide feedback for a student's attempt. Instructor/Admin only.
+    """
+    attempt = db.query(QuizAttempt).filter(QuizAttempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+        
+    quiz = db.query(Quiz).filter(Quiz.id == attempt.quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+        
+    _check_quiz_permissions(db, current_user, quiz.lesson_id, require_instructor=True)
+    
+    attempt.score = grade_in.score
+    if grade_in.instructor_feedback is not None:
+        attempt.instructor_feedback = grade_in.instructor_feedback
+        
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+    return attempt

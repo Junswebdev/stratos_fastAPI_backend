@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: stratos_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app  # Syncs your local files to the container for live reloading
+    # Override the default CMD to include --reload for development
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

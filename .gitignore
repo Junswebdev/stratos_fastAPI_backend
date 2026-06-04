@@ -1,0 +1,53 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.mypy_cache/
+.pytest_cache/
+
+# --- Critical Secrets (DO NOT REMOVE) ---
+.env
+*.pem
+*.key
+secrets.py
+local_settings.py
+
+# --- Database ---
+*.db
+*.sqlite3
+alembic/versions/__pycache__/
+alembic/versions/*.pyc
+
+# --- User Content & Uploads ---
+uploads/*
+!uploads/.gitkeep
+
+# --- IDEs & Editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Docker ---
+.docker/
+*.tar
