@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 
 from app.database import engine, Base, SessionLocal
-from app.controllers import api_router, auth
+from app.controllers import api_router
 from app.controllers.chat import websocket_endpoint
 from app.models.announcement import Announcement
 from app.utils.limiter import limiter, _rate_limit_exceeded_handler
@@ -27,6 +27,16 @@ app = FastAPI(
     title="Stratos LMS API",
     description="Backend API for the Stratos Learning Management System, built with a strict MVC pattern.",
     version="0.1.0"
+)
+
+# Register CORSMiddleware FIRST to ensure it wraps everything
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True, # Changed to True for better compatibility
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Register the Rate Limiter
@@ -79,15 +89,6 @@ app.include_router(api_router, prefix="/api/v1")
 # Top-level WebSocket registration to bypass potential prefixing issues
 app.add_api_websocket_route("/ws/{user_id}", websocket_endpoint)
 
-# Register CORSMiddleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 @app.websocket("/ws-test")
 async def websocket_test(websocket: WebSocket):
     await websocket.accept()
@@ -97,8 +98,20 @@ async def websocket_test(websocket: WebSocket):
 # Global Exception Handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    logging.exception("Unhandled request error: %s %s", request.method, request.url)
+    
+    # Very robust CORS header handling for errors
+    origin = request.headers.get("origin", "*")
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Credentials": "false",
+    }
+    
     return JSONResponse(
         status_code=500,
+        headers=headers,
         content={
             "status": "error",
             "message": "An internal server error occurred.",

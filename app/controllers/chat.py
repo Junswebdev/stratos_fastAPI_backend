@@ -1,10 +1,13 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, WebSocketException
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, WebSocketException, UploadFile, File, Form
 from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional
+from sqlalchemy import or_, and_
+from typing import List, Optional, Tuple, Dict
 from uuid import UUID
 import json
 import logging
 import sys
+import os
+import shutil
 from datetime import datetime
 
 from app.database import get_db
@@ -20,6 +23,8 @@ from app.views.chat import MessageRead, MessageCreate, MessageReply
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+CHAT_UPLOAD_DIR = "uploads/chat"
+os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
 
 
 async def get_ws_user(websocket: WebSocket, db: Session) -> User:
@@ -189,7 +194,10 @@ async def websocket_endpoint(
 
             # Standard message or Reply
             content = message_data.get("content", "").strip()
-            if not content:
+            attachment_url = message_data.get("attachment_url")
+            attachment_name = message_data.get("attachment_name")
+            attachment_type = message_data.get("attachment_type")
+            if not content and not attachment_url:
                 continue
             
             recipient_id = message_data.get("recipient_id")
@@ -201,7 +209,10 @@ async def websocket_endpoint(
                 content=content[:2000],
                 recipient_id=recipient_id,
                 course_id=course_id,
-                reply_to_id=reply_to_id
+                reply_to_id=reply_to_id,
+                attachment_url=attachment_url,
+                attachment_name=attachment_name,
+                attachment_type=attachment_type,
             )
             db.add(db_message)
             db.commit()
@@ -244,6 +255,62 @@ async def websocket_endpoint(
         logger.exception(f"WebSocket error for user {user_id}: {e}")
         manager.disconnect(user_uuid, websocket)
 
+
+@router.post("/attachment", response_model=MessageRead)
+async def send_message_attachment(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    content: str = Form(""),
+    recipient_id: Optional[UUID] = Form(None),
+    course_id: Optional[UUID] = Form(None),
+    reply_to_id: Optional[UUID] = Form(None),
+    file: UploadFile = File(...),
+):
+    """
+    Create a chat message with a file attachment for either a direct chat or a course chat.
+    """
+    if (recipient_id is None and course_id is None) or (recipient_id is not None and course_id is not None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide exactly one of recipient_id or course_id",
+        )
+    if recipient_id is not None and recipient_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot message yourself")
+
+    original_name = os.path.basename(file.filename or "attachment").replace("\\", "_").replace("/", "_")
+    file_ext = os.path.splitext(original_name)[1].lower()
+    safe_name = f"{int(datetime.now().timestamp())}_{original_name.replace(' ', '_')}"
+    file_path = os.path.join(CHAT_UPLOAD_DIR, safe_name)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    db_message = Message(
+        sender_id=current_user.id,
+        recipient_id=recipient_id,
+        course_id=course_id,
+        reply_to_id=reply_to_id,
+        content=content.strip()[:2000] if content.strip() else original_name,
+        attachment_url=f"/static/chat/{safe_name}",
+        attachment_name=original_name,
+        attachment_type=file.content_type or _guess_attachment_type(file_ext),
+    )
+    db.add(db_message)
+    db.commit()
+    db.refresh(db_message)
+
+    payload = _create_message_payload(db_message, "message")
+    if course_id:
+        recipients = _get_course_recipients(db, course_id)
+        await manager.broadcast(payload, recipients)
+        for uid in recipients:
+            if uid != current_user.id:
+                await _push_direct_or_course_stats(db, uid)
+    elif recipient_id:
+        await manager.broadcast(payload, [current_user.id, recipient_id])
+        await _push_direct_or_course_stats(db, recipient_id)
+
+    return _populate_msg_read(db_message, db)
+
 def _create_message_payload(db_message: Message, msg_type: str = "message") -> dict:
     payload = {
         "type": msg_type,
@@ -257,6 +324,9 @@ def _create_message_payload(db_message: Message, msg_type: str = "message") -> d
         "reply_to_id": str(db_message.reply_to_id) if db_message.reply_to_id else None,
         "is_edited": db_message.is_edited.isoformat() if db_message.is_edited else None,
         "is_deleted": db_message.is_deleted.isoformat() if db_message.is_deleted else None,
+        "attachment_url": db_message.attachment_url,
+        "attachment_name": db_message.attachment_name,
+        "attachment_type": db_message.attachment_type,
         "likes": [str(r.user_id) for r in db_message.reactions if r.reaction_type == 'like'],
         "dislikes": [str(r.user_id) for r in db_message.reactions if r.reaction_type == 'dislike'],
     }
@@ -269,6 +339,42 @@ def _create_message_payload(db_message: Message, msg_type: str = "message") -> d
             "content": db_message.reply_to.content if not db_message.reply_to.is_deleted else "This message was deleted"
         }
     return payload
+
+
+def _guess_attachment_type(file_ext: str) -> str:
+    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+    video_exts = {".mp4", ".mov", ".webm"}
+    audio_exts = {".mp3", ".wav", ".m4a", ".aac"}
+    document_exts = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".csv"}
+    if file_ext in image_exts:
+        return "image"
+    if file_ext in video_exts:
+        return "video"
+    if file_ext in audio_exts:
+        return "audio"
+    if file_ext in document_exts:
+        return "document"
+    return "file"
+
+
+def _get_course_recipients(db: Session, course_id: UUID) -> List[UUID]:
+    enrollments = db.query(Enrollment).filter(
+        Enrollment.course_id == course_id,
+        Enrollment.is_active == True
+    ).all()
+    recipients = [e.student_id for e in enrollments]
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if course and course.instructor_id not in recipients:
+        recipients.append(course.instructor_id)
+    return recipients
+
+
+async def _push_direct_or_course_stats(db: Session, user_id: UUID):
+    from app.controllers.stats import push_user_stats
+    from app.utils.cache import invalidate_cache
+
+    invalidate_cache(f"dashboard_{user_id}")
+    await push_user_stats(db, user_id)
 
 @router.get("/recent")
 def get_recent_conversations(
@@ -288,38 +394,42 @@ def get_recent_conversations(
     course_ids.extend([e.course_id for e in my_enrollments])
     
     course_ids = list(set(course_ids))
-    
+
     from app.models.message_read_state import MessageReadState
+
     results = []
     for cid in course_ids:
-        # Get last read time
         read_state = db.query(MessageReadState).filter(
             MessageReadState.user_id == current_user.id,
-            MessageReadState.course_id == cid
+            MessageReadState.course_id == cid,
+            MessageReadState.peer_user_id == None,
         ).first()
         last_read = read_state.last_read_at if read_state else datetime.min.replace(tzinfo=current_user.created_at.tzinfo)
 
-        # Find messages after last_read
-        unread_msgs = db.query(Message).filter(
+        messages = db.query(Message).options(joinedload(Message.sender)).filter(
             Message.course_id == cid,
-            Message.sender_id != current_user.id,
             Message.timestamp > last_read
         ).order_by(Message.timestamp.desc()).all()
 
-        if unread_msgs:
+        if messages:
             course = db.query(Course).filter(Course.id == cid).first()
-            last_msg = unread_msgs[0]
+            last_msg = messages[0]
+            unread_count = sum(1 for m in messages if m.sender_id != current_user.id)
             results.append({
                 "id": str(cid),
                 "title": course.title if course else "Unknown Course",
-                "last_message": last_msg.content,
+                "last_message": last_msg.content if last_msg.content else (last_msg.attachment_name or "Attachment"),
                 "last_message_time": last_msg.timestamp.isoformat(),
                 "sender_name": last_msg.sender.full_name if last_msg.sender else "User",
                 "course_id": str(cid),
-                "unread_count": len(unread_msgs)
+                "recipient_id": None,
+                "conversation_type": "course",
+                "unread_count": unread_count,
             })
-            
-    results.sort(key=lambda x: x['last_message_time'], reverse=True)
+
+    direct_conversations = _get_direct_conversation_summaries(db, current_user)
+    results.extend(direct_conversations)
+    results.sort(key=lambda x: x["last_message_time"], reverse=True)
     return results
 
 @router.post("/mark_read/{course_id}")
@@ -366,14 +476,15 @@ async def mark_direct_as_read(
     from app.controllers.stats import push_user_stats
     from app.utils.cache import invalidate_cache
     
-    # Simple logic: use MessageReadState with course_id=None as a global DM read marker
+    # Use per-peer DM read state so multiple direct conversations can be tracked independently.
     read_state = db.query(MessageReadState).filter(
         MessageReadState.user_id == current_user.id,
-        MessageReadState.course_id == None
+        MessageReadState.course_id == None,
+        MessageReadState.peer_user_id == other_user_id,
     ).first()
     
     if not read_state:
-        read_state = MessageReadState(user_id=current_user.id, course_id=None)
+        read_state = MessageReadState(user_id=current_user.id, course_id=None, peer_user_id=other_user_id)
         db.add(read_state)
     else:
         read_state.last_read_at = datetime.now()
@@ -417,6 +528,9 @@ def get_course_chat_history(
 def _populate_msg_read(m: Message, db: Session) -> MessageRead:
     msg_read = MessageRead.model_validate(m)
     msg_read.sender_name = m.sender.full_name if m.sender else "Unknown"
+    msg_read.attachment_url = m.attachment_url
+    msg_read.attachment_name = m.attachment_name
+    msg_read.attachment_type = m.attachment_type
     
     # Include reactions in history
     msg_read.likes = [str(r.user_id) for r in m.reactions if r.reaction_type == 'like']
@@ -434,3 +548,64 @@ def _populate_msg_read(m: Message, db: Session) -> MessageRead:
         msg_read.content = "This message was deleted"
         
     return msg_read
+
+
+def _get_direct_conversation_summaries(db: Session, current_user: User) -> List[dict]:
+    from app.models.message_read_state import MessageReadState
+
+    messages = db.query(Message).options(joinedload(Message.sender)).filter(
+        Message.course_id == None,
+        or_(
+            Message.sender_id == current_user.id,
+            Message.recipient_id == current_user.id
+        )
+    ).order_by(Message.timestamp.desc()).all()
+
+    grouped: Dict[str, List[Message]] = {}
+    for message in messages:
+        other_user_id = message.recipient_id if message.sender_id == current_user.id else message.sender_id
+        if not other_user_id:
+            continue
+        key = str(other_user_id)
+        grouped.setdefault(key, [])
+        if len(grouped[key]) < 1:
+            grouped[key].append(message)
+
+    results = []
+    for peer_id_str, latest_messages in grouped.items():
+        latest = latest_messages[0]
+        peer_id = UUID(peer_id_str)
+
+        read_state = db.query(MessageReadState).filter(
+            MessageReadState.user_id == current_user.id,
+            MessageReadState.course_id == None,
+            MessageReadState.peer_user_id == peer_id,
+        ).first()
+        global_dm_state = db.query(MessageReadState).filter(
+            MessageReadState.user_id == current_user.id,
+            MessageReadState.course_id == None,
+            MessageReadState.peer_user_id == None,
+        ).first()
+        last_read = read_state.last_read_at if read_state else (global_dm_state.last_read_at if global_dm_state else datetime.min.replace(tzinfo=current_user.created_at.tzinfo))
+
+        unread_count = db.query(Message).filter(
+            Message.course_id == None,
+            Message.sender_id == peer_id,
+            Message.recipient_id == current_user.id,
+            Message.timestamp > last_read,
+        ).count()
+
+        peer = db.query(User).filter(User.id == peer_id).first()
+        results.append({
+            "id": peer_id_str,
+            "title": peer.full_name if peer and peer.full_name else (peer.email if peer else "Direct Message"),
+            "last_message": latest.content if latest.content else (latest.attachment_name or "Attachment"),
+            "last_message_time": latest.timestamp.isoformat(),
+            "sender_name": latest.sender.full_name if latest.sender else "User",
+            "course_id": None,
+            "recipient_id": peer_id_str,
+            "conversation_type": "direct",
+            "unread_count": unread_count,
+        })
+
+    return results

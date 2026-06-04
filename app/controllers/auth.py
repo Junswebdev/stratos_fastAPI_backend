@@ -1,5 +1,6 @@
 from datetime import timedelta
 import logging
+import time
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -19,7 +20,6 @@ _auth_attempts: dict[str, list[tuple[float, int]]] = {}
 
 def _check_rate_limit(email: str, max_attempts: int = 5, window_seconds: int = 300) -> None:
     """Raise HTTPException if too many failed attempts for this email within window."""
-    import time
     now = time.time()
     attempts = _auth_attempts.get(email, [])
     # Remove expired attempts
@@ -34,7 +34,6 @@ def _check_rate_limit(email: str, max_attempts: int = 5, window_seconds: int = 3
     _auth_attempts[email] = attempts
 
 def _record_attempt(email: str, success: bool = False) -> None:
-    import time
     now = time.time()
     attempts = _auth_attempts.get(email, [])
     cutoff = now - 300  # 5 minute window
@@ -97,7 +96,8 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=Token)
 def login_json(
-    login_in: UserLogin, db: Session = Depends(get_db)
+    login_in: UserLogin, 
+    db: Session = Depends(get_db)
 ):
     """
     JSON compatible login, get an access token for future requests.
@@ -126,11 +126,16 @@ def login_json(
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     logging.info(f"Login successful for email: {login_in.email}")
     _record_attempt(login_in.email, success=True)
+    
+    # Explicit conversion to Pydantic model to avoid serialization recursion issues
+    user_read = UserRead.model_validate(user)
+    
     return {
         "access_token": create_access_token(
             user.id, expires_delta=access_token_expires
         ),
         "token_type": "bearer",
+        "user": user_read,
     }
 
 @router.post("/login/access-token", response_model=Token)
@@ -164,4 +169,5 @@ def login_access_token(
             user.id, expires_delta=access_token_expires
         ),
         "token_type": "bearer",
+        "user": user,
     }

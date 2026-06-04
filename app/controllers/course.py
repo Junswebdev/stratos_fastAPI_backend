@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, File, UploadFile, Form
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +20,14 @@ router = APIRouter()
 
 UPLOAD_DIR = "uploads/courses"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _course_detail_query(db: Session):
+    return db.query(Course).options(
+        joinedload(Course.instructor),
+        joinedload(Course.announcements),
+        joinedload(Course.modules).joinedload(Module.lessons),
+    )
 
 # --- Course Endpoints ---
 
@@ -81,6 +89,7 @@ async def create_course(
         raise HTTPException(status_code=500, detail="Failed to create course")
     
     db.refresh(db_course)
+    db_course = _course_detail_query(db).filter(Course.id == db_course.id).first()
     
     # Invalidate dashboard cache
     invalidate_cache(f"dashboard_{current_user.id}")
@@ -91,13 +100,24 @@ async def create_course(
 def read_courses(
     skip: int = 0, 
     limit: int = 100, 
+    search: Optional[str] = None,
+    edu_level: Optional[EduLevel] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Retrieve all courses.
+    Retrieve all courses with optional search and category filtering.
     """
-    query = db.query(Course)
+    query = _course_detail_query(db)
+    
+    if search:
+        query = query.filter(
+            (Course.title.ilike(f"%{search}%")) | 
+            (Course.description.ilike(f"%{search}%"))
+        )
+        
+    if edu_level:
+        query = query.filter(Course.edu_level == edu_level)
     
     courses = query.offset(skip).limit(limit).all()
     
@@ -131,7 +151,7 @@ def read_course(
     """
     Get a specific course by ID (Public, but shows enrollment status if logged in).
     """
-    course = db.query(Course).filter(Course.id == course_id).first()
+    course = _course_detail_query(db).filter(Course.id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     
@@ -190,6 +210,7 @@ async def update_course(
     db.add(db_course)
     db.commit()
     db.refresh(db_course)
+    db_course = _course_detail_query(db).filter(Course.id == db_course.id).first()
     
     # Invalidate dashboard cache
     invalidate_cache(f"dashboard_{current_user.id}")

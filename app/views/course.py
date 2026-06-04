@@ -1,9 +1,11 @@
 from pydantic import BaseModel, ConfigDict
+from pydantic import Field
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, List
 from app.models.user import EduLevel
 from app.views.lesson import LessonRead
+from app.views.user import UserRead
 
 class ModuleBase(BaseModel):
     title: str
@@ -21,7 +23,7 @@ class ModuleUpdate(BaseModel):
 class ModuleRead(ModuleBase):
     id: UUID
     course_id: UUID
-    lessons: List[LessonRead] = []
+    lessons: List[LessonRead] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -47,7 +49,8 @@ class CourseRead(CourseBase):
     join_code: str
     created_at: datetime
     updated_at: Optional[datetime] = None
-    modules: List[ModuleRead] = []
+    modules: List[ModuleRead] = Field(default_factory=list)
+    instructor: Optional[UserRead] = None
     is_enrolled: bool = False
     announcements_count: int = 0
     modules_count: int = 0
@@ -61,5 +64,7 @@ class CourseShort(BaseModel):
     title: str
     description: Optional[str] = None
     instructor_id: UUID
+    image_url: Optional[str] = None
+    instructor: Optional[UserRead] = None
 
     model_config = ConfigDict(from_attributes=True)

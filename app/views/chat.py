@@ -7,6 +7,9 @@ class MessageBase(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
     recipient_id: Optional[UUID] = None
     course_id: Optional[UUID] = None
+    attachment_url: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_type: Optional[str] = None
 
 class MessageCreate(MessageBase):
     pass
@@ -20,8 +23,11 @@ class MessageRead(MessageBase):
     is_edited: Optional[datetime] = None
     is_deleted: Optional[datetime] = None
     reply_to: Optional['MessageReply'] = None
-    likes: List[str] = []
-    dislikes: List[str] = []
+    likes: List[str] = Field(default_factory=list)
+    dislikes: List[str] = Field(default_factory=list)
+    attachment_url: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_type: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

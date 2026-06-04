@@ -56,7 +56,9 @@ async def create_enrollment(
         raise HTTPException(status_code=400, detail="Student is already enrolled in this course")
     
     # Reload with joined course for the response
-    db_enrollment = db.query(Enrollment).options(joinedload(Enrollment.course)).filter(Enrollment.id == db_enrollment.id).first()
+    db_enrollment = db.query(Enrollment).options(
+        joinedload(Enrollment.course).joinedload(Course.instructor)
+    ).filter(Enrollment.id == db_enrollment.id).first()
     
     # Invalidate dashboard cache for the student
     invalidate_cache(f"dashboard_{student_id}")
@@ -100,7 +102,9 @@ async def enroll_by_code(
         raise HTTPException(status_code=400, detail="Already enrolled in this course")
     
     # Reload with joined course for the response
-    db_enrollment = db.query(Enrollment).options(joinedload(Enrollment.course)).filter(Enrollment.id == db_enrollment.id).first()
+    db_enrollment = db.query(Enrollment).options(
+        joinedload(Enrollment.course).joinedload(Course.instructor)
+    ).filter(Enrollment.id == db_enrollment.id).first()
     
     # Invalidate dashboard cache for the student
     invalidate_cache(f"dashboard_{current_user.id}")
@@ -118,7 +122,9 @@ def read_my_enrollments(
     """
     Get all enrollments for the currently logged-in student.
     """
-    return db.query(Enrollment).options(joinedload(Enrollment.course)).filter(Enrollment.student_id == current_user.id).all()
+    return db.query(Enrollment).options(
+        joinedload(Enrollment.course).joinedload(Course.instructor)
+    ).filter(Enrollment.student_id == current_user.id).all()
 
 @router.get("/{enrollment_id}", response_model=EnrollmentRead)
 def read_enrollment(
@@ -129,7 +135,9 @@ def read_enrollment(
     """
     Get a specific enrollment by ID.
     """
-    enrollment = db.query(Enrollment).options(joinedload(Enrollment.course)).filter(Enrollment.id == enrollment_id).first()
+    enrollment = db.query(Enrollment).options(
+        joinedload(Enrollment.course).joinedload(Course.instructor)
+    ).filter(Enrollment.id == enrollment_id).first()
     if not enrollment:
         raise HTTPException(status_code=404, detail="Enrollment not found")
     

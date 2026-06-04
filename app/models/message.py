@@ -13,6 +13,9 @@ class Message(Base):
     recipient_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True) # Null for course chat
     course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id"), nullable=True, index=True) # Null for DMs
     content = Column(Text, nullable=False)
+    attachment_url = Column(Text, nullable=True)
+    attachment_name = Column(String, nullable=True)
+    attachment_type = Column(String, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     reply_to_id = Column(UUID(as_uuid=True), ForeignKey("messages.id"), nullable=True)
     is_edited = Column(DateTime(timezone=True), nullable=True)
@@ -35,4 +38,3 @@ class MessageReaction(Base):
 
     message = relationship("Message", back_populates="reactions")
     user = relationship("User")
-

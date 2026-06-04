@@ -19,10 +19,10 @@ if not SQLALCHEMY_DATABASE_URL:
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, 
     pool_pre_ping=True,
-    pool_size=20,          # Maintain up to 20 connections in the pool
-    max_overflow=10,       # Allow up to 10 additional connections if the pool is full
-    pool_timeout=30,       # Wait up to 30 seconds for an available connection before timing out
-    pool_recycle=1800      # Recycle connections after 30 minutes to prevent stale connections
+    pool_size=5,           # Reduced for Neon free tier (max 10 connections)
+    max_overflow=5,        # Allow 5 more if needed, total 10
+    pool_timeout=30,       
+    pool_recycle=1800      
 )
 
 # Create a session factory
@@ -33,8 +33,22 @@ Base = declarative_base()
 
 # Dependency to get a database session for each FastAPI request
 def get_db():
-    db = SessionLocal()
+    from sqlalchemy.exc import OperationalError
+    from fastapi import HTTPException, status
+    
     try:
+        db = SessionLocal()
         yield db
+    except OperationalError as e:
+        # Catch connection/DNS issues (common with serverless DBs like Neon)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database connection failed: {str(e)}"
+        )
     finally:
-        db.close()
+        # Use a safe close that doesn't crash if db was never initialized
+        try:
+            if 'db' in locals():
+                db.close()
+        except:
+            pass

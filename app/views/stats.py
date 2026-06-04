@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from .user import UserRead
 from .course import CourseRead
 from .announcement import AnnouncementRead
@@ -21,7 +21,7 @@ class UserStats(BaseModel):
     average_progress: float = 0.0 
     active_enrollments: int = 0
     unread_messages: int = 0
-    courses_by_level: Dict[str, int] = {}
+    courses_by_level: Dict[str, int] = Field(default_factory=dict)
 
 class DashboardData(BaseModel):
     user: UserRead

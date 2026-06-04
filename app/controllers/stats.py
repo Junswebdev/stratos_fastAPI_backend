@@ -63,7 +63,7 @@ def get_dashboard(
         
         # 4. Get Enrolled Courses (Summary)
         enrollments = db.query(Enrollment).options(
-            joinedload(Enrollment.course)
+            joinedload(Enrollment.course).joinedload(Course.instructor)
         ).filter(Enrollment.student_id == current_user.id).all()
         
         # 5. Get Recommended/All Courses (Summary)
@@ -71,7 +71,8 @@ def get_dashboard(
         # We avoid joining modules/lessons here as they aren't needed for the summary
         db_courses = db.query(Course).options(
             joinedload(Course.instructor),
-            joinedload(Course.announcements)
+            joinedload(Course.announcements),
+            joinedload(Course.modules).joinedload(Module.lessons)
         ).limit(10).all()
         
         course_results = []
@@ -79,10 +80,8 @@ def get_dashboard(
         for c in db_courses:
             course_read = CourseRead.model_validate(c)
             course_read.is_enrolled = c.id in enrolled_set
-            
-            # Manually calculate counts to avoid full module/lesson fetch
-            course_read.modules_count = db.query(func.count(Module.id)).filter(Module.course_id == c.id).scalar() or 0
-            course_read.lessons_count = db.query(func.count(Lesson.id)).join(Module).filter(Module.course_id == c.id).scalar() or 0
+            course_read.modules_count = len(c.modules)
+            course_read.lessons_count = sum(len(m.lessons) for m in c.modules)
             course_read.announcements_count = len(c.announcements)
             course_read.instructor_name = c.instructor.full_name if c.instructor else "Unknown"
             course_results.append(course_read)
@@ -121,19 +120,32 @@ def _get_unread_count(db: Session, user_id: UUID, course_ids: List[UUID]) -> int
             ).scalar() or 0
     
     # 2. Direct Messages
-    # Use the MessageReadState where course_id is NULL to store the last time the user checked their DMs.
-    dm_read_state = db.query(MessageReadState).filter(
-        MessageReadState.user_id == user_id,
-        MessageReadState.course_id == None
-    ).first()
-    
-    last_dm_read = dm_read_state.last_read_at if dm_read_state else datetime(1970, 1, 1, tzinfo=timezone.utc)
-
-    unread_total += db.query(func.count(Message.id)).filter(
+    peer_ids = [r[0] for r in db.query(Message.sender_id).filter(
         Message.recipient_id == user_id,
-        Message.course_id == None,
-        Message.timestamp > last_dm_read
-    ).scalar() or 0
+        Message.course_id == None
+    ).distinct().all()]
+
+    for peer_id in peer_ids:
+        read_state = db.query(MessageReadState).filter(
+            MessageReadState.user_id == user_id,
+            MessageReadState.course_id == None,
+            MessageReadState.peer_user_id == peer_id,
+        ).first()
+        fallback_state = db.query(MessageReadState).filter(
+            MessageReadState.user_id == user_id,
+            MessageReadState.course_id == None,
+            MessageReadState.peer_user_id == None,
+        ).first()
+        last_dm_read = read_state.last_read_at if read_state else (
+            fallback_state.last_read_at if fallback_state else datetime(1970, 1, 1, tzinfo=timezone.utc)
+        )
+
+        unread_total += db.query(func.count(Message.id)).filter(
+            Message.sender_id == peer_id,
+            Message.recipient_id == user_id,
+            Message.course_id == None,
+            Message.timestamp > last_dm_read
+        ).scalar() or 0
         
     return unread_total
 

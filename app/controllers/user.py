@@ -1,17 +1,23 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from typing import List
 from uuid import UUID
+import os
+import shutil
+import time
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.views.user import UserCreate, UserRead, UserUpdate
 from app.utils.security import get_password_hash, verify_password, create_access_token
 from app.utils.deps import get_current_active_user, get_current_active_superuser
+from app.utils.cache import invalidate_cache
 
 router = APIRouter()
+AVATAR_UPLOAD_DIR = "uploads/avatars"
+os.makedirs(AVATAR_UPLOAD_DIR, exist_ok=True)
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(
@@ -34,6 +40,7 @@ def register_user(
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
         full_name=user_in.full_name,
+        avatar_url=user_in.avatar_url,
         role=user_in.role,
         edu_level=user_in.edu_level,
         is_active=user_in.is_active,
@@ -48,6 +55,49 @@ def register_user(
             detail="A user with this email already exists.",
         )
     db.refresh(db_user)
+    return db_user
+
+@router.post("/{user_id}/avatar", response_model=UserRead)
+def upload_avatar(
+    user_id: UUID,
+    avatar_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Upload or replace the current user's avatar image.
+    """
+    if current_user.id != user_id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    file_ext = os.path.splitext(avatar_file.filename or '')[1].lower()
+    if file_ext not in {'.jpg', '.jpeg', '.png', '.webp', '.gif'}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported avatar file type",
+        )
+
+    file_name = f"{user_id}_{int(time.time())}{file_ext}"
+    file_path = os.path.join(AVATAR_UPLOAD_DIR, file_name)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(avatar_file.file, buffer)
+
+    db_user.avatar_url = f"/static/avatars/{file_name}"
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    invalidate_cache(f"dashboard_{user_id}")
     return db_user
 
 @router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
@@ -72,6 +122,7 @@ def create_user(
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
         full_name=user_in.full_name,
+        avatar_url=user_in.avatar_url,
         role=user_in.role,
         edu_level=user_in.edu_level,
         is_active=user_in.is_active,
@@ -99,6 +150,29 @@ def read_users(
     Retrieve a list of users (Admin only).
     """
     users = db.query(User).offset(skip).limit(limit).all()
+    return users
+
+
+@router.get("/contacts", response_model=List[UserRead])
+def read_contacts(
+    q: str = "",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Return a list of active users the current user can direct message.
+    """
+    query = db.query(User).filter(
+        User.is_active == True,
+        User.id != current_user.id,
+    )
+    if q.strip():
+        like = f"%{q.strip()}%"
+        query = query.filter(
+            (User.full_name.ilike(like)) | (User.email.ilike(like))
+        )
+
+    users = query.order_by(User.full_name.asc().nullslast(), User.email.asc()).limit(100).all()
     return users
 
 @router.get("/me", response_model=UserRead)
@@ -175,6 +249,10 @@ def update_user(
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    
+    # Invalidate dashboard cache for the user
+    invalidate_cache(f"dashboard_{user_id}")
+    
     return db_user
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

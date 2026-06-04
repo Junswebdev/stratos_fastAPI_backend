@@ -4,7 +4,7 @@ This package contains FastAPI APIRouters that handle incoming HTTP requests,
 execute business logic, and return standard Views (Pydantic schemas).
 """
 import logging
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 
 from . import user, course, auth, enrollment, lesson, chat, announcement, stats, quiz, ai
 

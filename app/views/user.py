@@ -8,6 +8,7 @@ from app.models.user import UserRole, EduLevel
 class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     role: UserRole = UserRole.STUDENT
     edu_level: EduLevel = EduLevel.HIGHER_ED
     is_active: Optional[bool] = True
@@ -19,6 +20,7 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     password: Optional[str] = Field(None, min_length=8)
     
     
