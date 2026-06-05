@@ -22,4 +22,4 @@ COPY . .
 EXPOSE 10000
 
 # Command to run the FastAPI application using gunicorn for production load handling
-CMD ["sh", "-c", "gunicorn app.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-10000}"]
+CMD ["sh", "-c", "gunicorn app.main:app -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-10000}"]
