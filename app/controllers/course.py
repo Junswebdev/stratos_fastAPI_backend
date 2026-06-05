@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.exc import IntegrityError
-import shutil
 import os
 
 from app.database import get_db
@@ -16,10 +15,9 @@ from app.utils.codes import generate_join_code
 from app.services.ai_service import ai_service
 from app.utils.cache import invalidate_cache
 
-router = APIRouter()
+from app.utils.cloudinary_upload import upload_to_cloudinary
 
-UPLOAD_DIR = "uploads/courses"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+router = APIRouter()
 
 
 def _course_detail_query(db: Session):
@@ -62,12 +60,8 @@ async def create_course(
     
     image_url = None
     if image_file:
-        file_ext = os.path.splitext(image_file.filename)[1]
-        file_name = f"{join_code}{file_ext}"
-        file_path = os.path.join(UPLOAD_DIR, file_name)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(image_file.file, buffer)
-        image_url = f"/static/courses/{file_name}"
+        file_bytes = image_file.file.read()
+        image_url = upload_to_cloudinary(file_bytes, folder="courses", public_id=f"courses/{join_code}", resource_type="image")
     else:
         # AI Thumbnail Selection fallback
         keyword = await ai_service.generate_image_keyword(description or title)
@@ -216,13 +210,9 @@ async def update_course(
     if edu_level: db_course.edu_level = edu_level
     
     if image_file:
-        file_ext = os.path.splitext(image_file.filename)[1]
         import time
-        file_name = f"{db_course.join_code}_{int(time.time())}{file_ext}"
-        file_path = os.path.join(UPLOAD_DIR, file_name)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(image_file.file, buffer)
-        db_course.image_url = f"/static/courses/{file_name}"
+        file_bytes = image_file.file.read()
+        db_course.image_url = upload_to_cloudinary(file_bytes, folder="courses", public_id=f"courses/{db_course.join_code}_{int(time.time())}", resource_type="image")
     
     db.add(db_course)
     db.commit()

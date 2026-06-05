@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
 import uuid
-import shutil
 import os
 
 from app.database import get_db
@@ -16,10 +15,9 @@ from app.views.lesson import LessonCreate, LessonRead, LessonUpdate
 from app.views.lesson_progress import LessonProgressResponse
 from app.utils.deps import get_current_active_user
 
-router = APIRouter()
+from app.utils.cloudinary_upload import upload_to_cloudinary
 
-# Define an upload directory (create this directory in your project root)
-UPLOAD_DIR = "uploads/lessons"
+router = APIRouter()
 
 @router.post("/", response_model=LessonRead, status_code=status.HTTP_201_CREATED)
 async def create_lesson(
@@ -64,17 +62,11 @@ async def create_lesson(
     )
 
     if file and file.filename:
-        # Ensure upload directory exists
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-        # Generate a temporary ID for the file name since DB ID isn't set yet
-        temp_id = str(uuid.uuid4())
-        safe_filename = f"{temp_id}_{file.filename.replace(' ', '_')}"
-        file_location = os.path.join(UPLOAD_DIR, safe_filename)
-
         try:
-            with open(file_location, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            db_lesson.file_url = f"/{UPLOAD_DIR}/{safe_filename}"
+            temp_id = str(uuid.uuid4())
+            public_id = f"lessons/{temp_id}_{file.filename.replace(' ', '_')}"
+            file_bytes = file.file.read()
+            db_lesson.file_url = upload_to_cloudinary(file_bytes, folder="lessons", public_id=public_id, resource_type="auto")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
         finally:
@@ -182,15 +174,6 @@ def delete_lesson(
     if course.instructor_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Not enough permissions")
     
-    # Optional: Delete the file from disk if it exists
-    if db_lesson.file_url:
-        try:
-            # Remove leading slash and construct path
-            file_path = db_lesson.file_url.lstrip("/")
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception as e:
-            print(f"Error deleting file {db_lesson.file_url}: {e}")
 
     try:
         db.delete(db_lesson)
@@ -232,27 +215,15 @@ async def upload_lesson_file(
             detail="Not enough permissions to upload files to this lesson."
         )
     
-    # Ensure upload directory exists
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    
-    # Sanitize filename (basic example)
-    safe_filename = f"{lesson_id}_{file.filename.replace(' ', '_')}"
-    file_location = os.path.join(UPLOAD_DIR, safe_filename)
-    
-    print(f"BACKEND: Saving file to {file_location}")
-    # Save the file locally
     try:
-        with open(file_location, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        public_id = f"lessons/{lesson_id}_{file.filename.replace(' ', '_')}"
+        file_bytes = file.file.read()
+        db_lesson.file_url = upload_to_cloudinary(file_bytes, folder="lessons", public_id=public_id, resource_type="auto")
     except Exception as e:
-        print(f"BACKEND: File save error: {e}")
+        print(f"BACKEND: File upload error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {e}")
     finally:
         file.file.close()
-            
-    # Update lesson with file URL/path
-    db_lesson.file_url = f"/{UPLOAD_DIR}/{safe_filename}" # Store a relative path or a full URL if using cloud storage
-    print(f"BACKEND: Saved lesson file url: {db_lesson.file_url}")
     db.add(db_lesson)
     db.commit()
     db.refresh(db_lesson)

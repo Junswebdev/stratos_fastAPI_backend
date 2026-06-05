@@ -5,7 +5,6 @@ from sqlalchemy.exc import IntegrityError
 from typing import List
 from uuid import UUID
 import os
-import shutil
 import time
 
 from app.database import get_db
@@ -15,9 +14,9 @@ from app.utils.security import get_password_hash, verify_password, create_access
 from app.utils.deps import get_current_active_user, get_current_active_superuser
 from app.utils.cache import invalidate_cache
 
+from app.utils.cloudinary_upload import upload_to_cloudinary
+
 router = APIRouter()
-AVATAR_UPLOAD_DIR = "uploads/avatars"
-os.makedirs(AVATAR_UPLOAD_DIR, exist_ok=True)
 
 @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register_user(
@@ -87,12 +86,9 @@ def upload_avatar(
             detail="Unsupported avatar file type",
         )
 
-    file_name = f"{user_id}_{int(time.time())}{file_ext}"
-    file_path = os.path.join(AVATAR_UPLOAD_DIR, file_name)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(avatar_file.file, buffer)
-
-    db_user.avatar_url = f"/static/avatars/{file_name}"
+    public_id = f"avatars/{user_id}_{int(time.time())}"
+    file_bytes = avatar_file.file.read()
+    db_user.avatar_url = upload_to_cloudinary(file_bytes, folder="avatars", public_id=public_id, resource_type="image")
     db.add(db_user)
     db.commit()
     db.refresh(db_user)

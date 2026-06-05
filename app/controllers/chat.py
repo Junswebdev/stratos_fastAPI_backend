@@ -7,7 +7,6 @@ import json
 import logging
 import sys
 import os
-import shutil
 from datetime import datetime
 
 from app.database import get_db
@@ -21,10 +20,10 @@ from app.models.course import Course
 from app.models.user import User, UserRole
 from app.views.chat import MessageRead, MessageCreate, MessageReply
 
+from app.utils.cloudinary_upload import upload_to_cloudinary
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
-CHAT_UPLOAD_DIR = "uploads/chat"
-os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
 
 
 async def get_ws_user(websocket: WebSocket, db: Session) -> User:
@@ -284,10 +283,9 @@ async def send_message_attachment(
 
     original_name = os.path.basename(file.filename or "attachment").replace("\\", "_").replace("/", "_")
     file_ext = os.path.splitext(original_name)[1].lower()
-    safe_name = f"{int(datetime.now().timestamp())}_{original_name.replace(' ', '_')}"
-    file_path = os.path.join(CHAT_UPLOAD_DIR, safe_name)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    public_id = f"chat/{int(datetime.now().timestamp())}_{original_name.replace(' ', '_')}"
+    file_bytes = file.file.read()
+    attachment_url = upload_to_cloudinary(file_bytes, folder="chat", public_id=public_id, resource_type="auto")
 
     db_message = Message(
         sender_id=current_user.id,
@@ -295,7 +293,7 @@ async def send_message_attachment(
         course_id=course_id,
         reply_to_id=reply_to_id,
         content=content.strip()[:2000] if content.strip() else original_name,
-        attachment_url=f"/static/chat/{safe_name}",
+        attachment_url=attachment_url,
         attachment_name=original_name,
         attachment_type=file.content_type or _guess_attachment_type(file_ext),
     )
