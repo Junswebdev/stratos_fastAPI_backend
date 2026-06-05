@@ -10,7 +10,7 @@ from app.database import get_db
 from app.models.lesson import Lesson
 from app.models.course import Course, Module
 from app.models.user import User, UserRole
-from app.models.enrollment import Enrollment
+from app.models.enrollment import Enrollment, EnrollmentStatus
 from app.models.lesson_progress import LessonProgress
 from app.views.lesson import LessonCreate, LessonRead, LessonUpdate
 from app.views.lesson_progress import LessonProgressResponse
@@ -116,7 +116,7 @@ def read_lesson(
     is_enrolled = db.query(Enrollment).filter(
         Enrollment.student_id == current_user.id,
         Enrollment.course_id == course.id,
-        Enrollment.is_active == True
+        Enrollment.status == EnrollmentStatus.APPROVED
     ).first() is not None
     
     if not (is_instructor or is_admin or is_enrolled):

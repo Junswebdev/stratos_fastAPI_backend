@@ -6,7 +6,7 @@ execute business logic, and return standard Views (Pydantic schemas).
 import logging
 from fastapi import APIRouter
 
-from . import user, course, auth, enrollment, lesson, chat, announcement, stats, quiz, ai
+from . import user, course, auth, enrollment, lesson, chat, announcement, stats, quiz, ai, schedule
 
 # Initialize the main API router that will aggregate all other controllers
 api_router = APIRouter()
@@ -41,3 +41,4 @@ api_router.include_router(announcement.router, prefix="/announcements", tags=["A
 api_router.include_router(stats.router, prefix="/stats", tags=["Stats"])
 api_router.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
 api_router.include_router(ai.router, prefix="/ai", tags=["AI"])
+api_router.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])

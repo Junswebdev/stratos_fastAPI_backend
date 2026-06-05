@@ -18,6 +18,7 @@ class MessageRead(MessageBase):
     id: UUID
     sender_id: UUID
     sender_name: Optional[str] = None
+    sender_avatar_url: Optional[str] = None
     timestamp: datetime
     reply_to_id: Optional[UUID] = None
     is_edited: Optional[datetime] = None
@@ -35,6 +36,7 @@ class MessageReply(BaseModel):
     id: UUID
     sender_id: UUID
     sender_name: Optional[str] = None
+    sender_avatar_url: Optional[str] = None
     content: str
     
     model_config = ConfigDict(from_attributes=True)

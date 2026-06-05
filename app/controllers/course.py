@@ -9,7 +9,7 @@ import os
 from app.database import get_db
 from app.models.course import Course, Module
 from app.models.user import User, UserRole, EduLevel
-from app.models.enrollment import Enrollment
+from app.models.enrollment import Enrollment, EnrollmentStatus
 from app.views.course import CourseRead, ModuleCreate, ModuleRead, ModuleUpdate
 from app.utils.deps import get_current_active_user, get_current_user_optional
 from app.utils.codes import generate_join_code
@@ -121,11 +121,10 @@ def read_courses(
     
     courses = query.offset(skip).limit(limit).all()
     
-    # Get all course IDs the current user is enrolled in
-    enrolled_ids = {
-        e.course_id for e in db.query(Enrollment.course_id).filter(
-            Enrollment.student_id == current_user.id,
-            Enrollment.is_active == True
+    # Get all enrollments for the current user to determine status
+    user_enrollments = {
+        e.course_id: e.status.value for e in db.query(Enrollment).filter(
+            Enrollment.student_id == current_user.id
         ).all()
     }
     
@@ -133,11 +132,15 @@ def read_courses(
     results = []
     for c in courses:
         course_read = CourseRead.model_validate(c)
-        course_read.is_enrolled = c.id in enrolled_ids
+        course_read.enrollment_status = user_enrollments.get(c.id)
+        course_read.is_enrolled = course_read.enrollment_status == 'approved'
         course_read.modules_count = len(c.modules)
         course_read.lessons_count = sum(len(m.lessons) for m in c.modules)
         course_read.announcements_count = len(c.announcements)
         course_read.instructor_name = c.instructor.full_name
+        
+        # Security: Strip join code in list for everyone
+        course_read.join_code = None
         results.append(course_read)
         
     return results
@@ -161,13 +164,27 @@ def read_course(
     course_read.announcements_count = len(course.announcements)
     course_read.instructor_name = course.instructor.full_name
     
+    is_approved = False
+    is_owner = current_user and course.instructor_id == current_user.id
+    is_admin = current_user and current_user.role == UserRole.ADMIN
+
     if current_user:
-        is_enrolled = db.query(Enrollment).filter(
+        enrollment = db.query(Enrollment).filter(
             Enrollment.student_id == current_user.id,
-            Enrollment.course_id == course_id,
-            Enrollment.is_active == True
-        ).first() is not None
-        course_read.is_enrolled = is_enrolled
+            Enrollment.course_id == course_id
+        ).first()
+        if enrollment:
+            course_read.enrollment_status = enrollment.status.value
+            course_read.is_enrolled = enrollment.status == EnrollmentStatus.APPROVED
+            is_approved = course_read.is_enrolled
+    
+    # Privacy: Hide modules/lessons if not approved, instructor, or admin
+    if not (is_approved or is_owner or is_admin):
+        course_read.modules = []
+    
+    # Security: Hide join code if not instructor/admin
+    if not (is_owner or is_admin):
+        course_read.join_code = None
         
     return course_read
 

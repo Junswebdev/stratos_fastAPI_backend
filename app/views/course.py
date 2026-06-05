@@ -46,12 +46,13 @@ class CourseUpdate(BaseModel):
 
 class CourseRead(CourseBase):
     id: UUID
-    join_code: str
+    join_code: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     modules: List[ModuleRead] = Field(default_factory=list)
     instructor: Optional[UserRead] = None
     is_enrolled: bool = False
+    enrollment_status: Optional[str] = None
     announcements_count: int = 0
     modules_count: int = 0
     lessons_count: int = 0

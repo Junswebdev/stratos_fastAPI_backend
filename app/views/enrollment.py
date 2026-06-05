@@ -3,6 +3,7 @@ from uuid import UUID
 from datetime import datetime
 from typing import Optional
 from app.views.course import CourseShort
+from app.models.enrollment import EnrollmentStatus
 
 class EnrollmentBase(BaseModel):
     course_id: UUID
@@ -13,10 +14,12 @@ class EnrollmentCreate(EnrollmentBase):
 class EnrollmentUpdate(BaseModel):
     progress: Optional[float] = None
     is_active: Optional[bool] = None
+    status: Optional[EnrollmentStatus] = None
 
 class EnrollmentRead(EnrollmentBase):
     id: UUID
     student_id: UUID
+    status: EnrollmentStatus
     enrolled_at: datetime
     progress: float
     is_active: bool

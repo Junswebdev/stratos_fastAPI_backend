@@ -4,6 +4,12 @@ from .course import CourseRead
 from .announcement import AnnouncementRead
 from .enrollment import EnrollmentRead
 from typing import Dict, Optional, List
+from datetime import datetime
+
+class ScheduleItemRead(BaseModel):
+    id: str
+    title: str
+    time_str: str
 
 class UserStats(BaseModel):
     # Student specific
@@ -29,3 +35,4 @@ class DashboardData(BaseModel):
     courses: List[CourseRead]
     announcements: List[AnnouncementRead]
     enrollments: List[EnrollmentRead]
+    schedule: List[ScheduleItemRead] = []

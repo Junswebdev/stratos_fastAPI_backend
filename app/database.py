@@ -22,7 +22,7 @@ engine = create_engine(
     pool_size=5,           # Reduced for Neon free tier (max 10 connections)
     max_overflow=5,        # Allow 5 more if needed, total 10
     pool_timeout=30,       
-    pool_recycle=1800      
+    pool_recycle=300       # Refresh connections every 5 minutes to avoid Neon idle timeouts
 )
 
 # Create a session factory

@@ -5,11 +5,12 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
 from app.database import get_db
-from app.models.enrollment import Enrollment
+from app.models.enrollment import Enrollment, EnrollmentStatus
 from app.models.course import Course, Module
 from app.models.lesson import Lesson
 from app.models.lesson_progress import LessonProgress
 from app.models.announcement import Announcement
+from app.models.schedule import ScheduleItem
 from app.models.message import Message
 from app.models.message_read_state import MessageReadState
 from app.models.user import User, UserRole
@@ -47,7 +48,7 @@ def get_dashboard(
         now = datetime.now(timezone.utc)
         enrolled_ids = [r[0] for r in db.query(Enrollment.course_id).filter(
             Enrollment.student_id == current_user.id,
-            Enrollment.is_active == True
+            Enrollment.status == EnrollmentStatus.APPROVED
         ).all()]
         
         instructed_ids = [r[0] for r in db.query(Course.id).filter(
@@ -62,13 +63,17 @@ def get_dashboard(
         ).order_by(Announcement.created_at.desc()).limit(10).all()
         
         # 4. Get Enrolled Courses (Summary)
-        enrollments = db.query(Enrollment).options(
+        user_enrollments_all = db.query(Enrollment).options(
             joinedload(Enrollment.course).joinedload(Course.instructor)
-        ).filter(Enrollment.student_id == current_user.id).all()
+        ).filter(
+            Enrollment.student_id == current_user.id
+        ).all()
+        user_enrollment_map = {e.course_id: e.status.value for e in user_enrollments_all}
+
+        enrollments = [e for e in user_enrollments_all if e.status == EnrollmentStatus.APPROVED]
         
         # 5. Get Recommended/All Courses (Summary)
         # Optimized: Only fetch 10 courses for the dashboard recommendation
-        # We avoid joining modules/lessons here as they aren't needed for the summary
         db_courses = db.query(Course).options(
             joinedload(Course.instructor),
             joinedload(Course.announcements),
@@ -76,23 +81,33 @@ def get_dashboard(
         ).limit(10).all()
         
         course_results = []
-        enrolled_set = set(enrolled_ids)
         for c in db_courses:
             course_read = CourseRead.model_validate(c)
-            course_read.is_enrolled = c.id in enrolled_set
+            course_read.enrollment_status = user_enrollment_map.get(c.id)
+            course_read.is_enrolled = course_read.enrollment_status == 'approved'
             course_read.modules_count = len(c.modules)
             course_read.lessons_count = sum(len(m.lessons) for m in c.modules)
             course_read.announcements_count = len(c.announcements)
             course_read.instructor_name = c.instructor.full_name if c.instructor else "Unknown"
+            
+            # Security: Strip join code
+            course_read.join_code = None
             course_results.append(course_read)
+
+        # 6. Get Schedule Items
+        schedule_items = db.query(ScheduleItem).filter(
+            ScheduleItem.instructor_id == current_user.id
+        ).order_by(ScheduleItem.created_at.desc()).limit(10).all()
 
         return DashboardData(
             user=user_read,
             stats=stats,
             courses=course_results,
             announcements=[AnnouncementRead.model_validate(a) for a in announcements],
-            enrollments=[EnrollmentRead.model_validate(e) for e in enrollments]
+            enrollments=[EnrollmentRead.model_validate(e) for e in enrollments],
+            schedule=[{"id": str(s.id), "title": s.title, "time_str": s.time_str} for s in schedule_items]
         )
+
 
     # Cache the dashboard payload per user for 5 minutes. 
     # Real-time events (like new announcements) should ideally invalidate this cache via 'invalidate_cache'
@@ -163,10 +178,10 @@ def calculate_user_stats(db: Session, user: User) -> UserStats:
         
         courses_created = len(course_ids)
         
-        # Total students (sum of active enrollments in my courses)
+        # Total students (sum of approved enrollments in my courses)
         total_students = db.query(func.count(Enrollment.id)).filter(
             Enrollment.course_id.in_(course_ids),
-            Enrollment.is_active == True
+            Enrollment.status == EnrollmentStatus.APPROVED
         ).scalar() if course_ids else 0
         
         # Total lessons authored

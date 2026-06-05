@@ -16,7 +16,7 @@ from app.utils.deps import get_current_active_user
 from app.utils.security import SECRET_KEY, ALGORITHM
 from jose import jwt, JWTError
 from app.models.message import Message, MessageReaction
-from app.models.enrollment import Enrollment
+from app.models.enrollment import Enrollment, EnrollmentStatus
 from app.models.course import Course
 from app.models.user import User, UserRole
 from app.views.chat import MessageRead, MessageCreate, MessageReply
@@ -216,7 +216,12 @@ async def websocket_endpoint(
             )
             db.add(db_message)
             db.commit()
-            db.refresh(db_message)
+            
+            # Eagerly load relationships for the real-time payload
+            db_message = db.query(Message).options(
+                joinedload(Message.sender),
+                joinedload(Message.reply_to).joinedload(Message.sender)
+            ).filter(Message.id == db_message.id).first()
             
             broadcast_payload = _create_message_payload(db_message, "message")
             from app.controllers.stats import push_user_stats
@@ -296,7 +301,12 @@ async def send_message_attachment(
     )
     db.add(db_message)
     db.commit()
-    db.refresh(db_message)
+    
+    # Eagerly load relationships for the real-time payload
+    db_message = db.query(Message).options(
+        joinedload(Message.sender),
+        joinedload(Message.reply_to).joinedload(Message.sender)
+    ).filter(Message.id == db_message.id).first()
 
     payload = _create_message_payload(db_message, "message")
     if course_id:
@@ -317,6 +327,7 @@ def _create_message_payload(db_message: Message, msg_type: str = "message") -> d
         "id": str(db_message.id),
         "sender_id": str(db_message.sender_id),
         "sender_name": db_message.sender.full_name if db_message.sender else "User",
+        "sender_avatar_url": db_message.sender.avatar_url if db_message.sender else None,
         "content": db_message.content,
         "timestamp": db_message.timestamp.isoformat(),
         "course_id": str(db_message.course_id) if db_message.course_id else None,
@@ -336,6 +347,7 @@ def _create_message_payload(db_message: Message, msg_type: str = "message") -> d
             "id": str(db_message.reply_to.id),
             "sender_id": str(db_message.reply_to.sender_id),
             "sender_name": db_message.reply_to.sender.full_name if db_message.reply_to.sender else "User",
+            "sender_avatar_url": db_message.reply_to.sender.avatar_url if db_message.reply_to.sender else None,
             "content": db_message.reply_to.content if not db_message.reply_to.is_deleted else "This message was deleted"
         }
     return payload
@@ -390,7 +402,10 @@ def get_recent_conversations(
         my_taught = db.query(Course).filter(Course.instructor_id == current_user.id).all()
         course_ids.extend([c.id for c in my_taught])
     
-    my_enrollments = db.query(Enrollment).filter(Enrollment.student_id == current_user.id, Enrollment.is_active == True).all()
+    my_enrollments = db.query(Enrollment).filter(
+        Enrollment.student_id == current_user.id, 
+        Enrollment.status == EnrollmentStatus.APPROVED
+    ).all()
     course_ids.extend([e.course_id for e in my_enrollments])
     
     course_ids = list(set(course_ids))
@@ -503,7 +518,7 @@ def get_direct_message_history(
 ):
     messages = db.query(Message).options(
         joinedload(Message.sender),
-        joinedload(Message.reply_to),
+        joinedload(Message.reply_to).joinedload(Message.sender),
         joinedload(Message.reactions)
     ).filter(
         ((Message.sender_id == current_user.id) & (Message.recipient_id == other_user_id)) |
@@ -520,7 +535,7 @@ def get_course_chat_history(
 ):
     messages = db.query(Message).options(
         joinedload(Message.sender),
-        joinedload(Message.reply_to),
+        joinedload(Message.reply_to).joinedload(Message.sender),
         joinedload(Message.reactions)
     ).filter(Message.course_id == course_id).order_by(Message.timestamp.asc()).all()
     return [_populate_msg_read(m, db) for m in messages]
@@ -528,6 +543,7 @@ def get_course_chat_history(
 def _populate_msg_read(m: Message, db: Session) -> MessageRead:
     msg_read = MessageRead.model_validate(m)
     msg_read.sender_name = m.sender.full_name if m.sender else "Unknown"
+    msg_read.sender_avatar_url = m.sender.avatar_url if m.sender else None
     msg_read.attachment_url = m.attachment_url
     msg_read.attachment_name = m.attachment_name
     msg_read.attachment_type = m.attachment_type
@@ -541,6 +557,7 @@ def _populate_msg_read(m: Message, db: Session) -> MessageRead:
             id=m.reply_to.id,
             sender_id=m.reply_to.sender_id,
             sender_name=m.reply_to.sender.full_name if m.reply_to.sender else "User",
+            sender_avatar_url=m.reply_to.sender.avatar_url if m.reply_to.sender else None,
             content=m.reply_to.content if not m.reply_to.is_deleted else "This message was deleted"
         )
     

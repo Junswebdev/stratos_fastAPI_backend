@@ -18,6 +18,7 @@ from app.database import engine, Base, SessionLocal
 from app.controllers import api_router
 from app.controllers.chat import websocket_endpoint
 from app.models.announcement import Announcement
+from app.models.schedule import ScheduleItem
 from app.utils.limiter import limiter, _rate_limit_exceeded_handler
 import asyncio
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True, # Changed to True for better compatibility
+    allow_credentials=False, # Use False when using allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
@@ -77,10 +78,12 @@ app.debug = True
 os.makedirs("uploads/lessons", exist_ok=True)
 os.makedirs("uploads/courses", exist_ok=True)
 os.makedirs("uploads/avatars", exist_ok=True)
+os.makedirs("uploads/chat", exist_ok=True)
 
 app.mount("/static/lessons", StaticFiles(directory="uploads/lessons"), name="static_lessons")
 app.mount("/static/courses", StaticFiles(directory="uploads/courses"), name="static_courses")
 app.mount("/static/avatars", StaticFiles(directory="uploads/avatars"), name="static_avatars")
+app.mount("/static/chat", StaticFiles(directory="uploads/chat"), name="static_chat")
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Register all routes via the main API router
