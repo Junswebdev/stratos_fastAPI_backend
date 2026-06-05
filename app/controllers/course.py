@@ -35,6 +35,7 @@ async def create_course(
     description: Optional[str] = Form(None),
     edu_level: EduLevel = Form(EduLevel.HIGHER_ED),
     instructor_id: Optional[UUID] = Form(None),
+    image_url_input: Optional[str] = Form(None),
     image_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -62,6 +63,8 @@ async def create_course(
     if image_file:
         file_bytes = image_file.file.read()
         image_url = upload_to_cloudinary(file_bytes, folder="courses", public_id=f"courses/{join_code}", resource_type="image")
+    elif image_url_input:
+        image_url = image_url_input
     else:
         # AI Thumbnail Selection fallback
         keyword = await ai_service.generate_image_keyword(description or title)
@@ -188,6 +191,7 @@ async def update_course(
     title: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     edu_level: Optional[EduLevel] = Form(None),
+    image_url_input: Optional[str] = Form(None),
     image_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
@@ -213,6 +217,8 @@ async def update_course(
         import time
         file_bytes = image_file.file.read()
         db_course.image_url = upload_to_cloudinary(file_bytes, folder="courses", public_id=f"courses/{db_course.join_code}_{int(time.time())}", resource_type="image")
+    elif image_url_input:
+        db_course.image_url = image_url_input
     
     db.add(db_course)
     db.commit()
