@@ -9,7 +9,8 @@ from app.models.lesson import Lesson
 class AIService:
     def __init__(self):
         self.api_key = os.getenv("MISTRAL_API_KEY")
-        self.model = "mistral-tiny" # Default to a fast/cheap model
+        # Use open-mistral-7b which is more capable than tiny but still fast
+        self.model = "open-mistral-7b" 
         self.client = Mistral(api_key=self.api_key) if self.api_key else None
 
     async def get_course_context(self, db: Session, course_id: str) -> str:
@@ -26,8 +27,8 @@ class AIService:
             context_parts.append(f"\nModule: {module.title}")
             for lesson in module.lessons:
                 if lesson.content_type == "text" and lesson.content_data:
-                    # Limit content per lesson to avoid blowing out token limits for now
-                    content_preview = lesson.content_data[:1000] 
+                    # Limit content per lesson to avoid blowing out token limits
+                    content_preview = lesson.content_data[:1500] 
                     context_parts.append(f"- Lesson: {lesson.title}\n  Content: {content_preview}")
         
         return "\n".join(context_parts)
@@ -71,43 +72,53 @@ class AIService:
             f"Generate a quiz with exactly {num_questions} questions based on the following educational content:\n\n"
             f"--- CONTENT ---\n{content}\n----------------\n\n"
             "Include a mix of these types:\n"
-            "1. multiple_choice (4 options)\n"
-            "2. fill_in_the_blanks (sentence with ___)\n"
-            "3. objective (short one-word or one-phrase answer)\n"
-            "4. essay (reflective question)\n\n"
-            "Return the result as a raw JSON list of objects with this schema:\n"
+            "1. multiple_choice (requires 'options' as list and 'correct_index' as int)\n"
+            "2. fill_in_the_blanks (sentence with ___, requires 'answer' string)\n"
+            "3. objective (short answer, requires 'answer' string)\n"
+            "4. essay (reflective, requires 'answer' string for grading rubric)\n\n"
+            "Return the result as a raw JSON list. Example format:\n"
             "[\n"
             "  {\n"
             "    \"type\": \"multiple_choice\",\n"
-            "    \"question\": \"...\",\n"
-            "    \"data\": {\"options\": [\"...\", \"...\", \"...\", \"...\"], \"correct_index\": 0},\n"
-            "    \"explanation\": \"...\"\n"
-            "  },\n"
-            "  {\n"
-            "    \"type\": \"fill_in_the_blanks\",\n"
-            "    \"question\": \"The capital of France is ___.\",\n"
-            "    \"data\": {\"answer\": \"Paris\"},\n"
-            "    \"explanation\": \"...\"\n"
+            "    \"question\": \"Question text?\",\n"
+            "    \"data\": {\"options\": [\"A\", \"B\", \"C\", \"D\"], \"correct_index\": 0},\n"
+            "    \"explanation\": \"Why this is correct\"\n"
             "  }\n"
             "]\n"
-            "Only return the JSON. No preamble or markdown blocks."
+            "IMPORTANT: Only return the JSON list. No preamble, no conversational text, no markdown code blocks."
         )
 
         try:
             response = self.client.chat.complete(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "You are a JSON generator. You only output valid JSON arrays of quiz questions."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"} if "latest" in self.model or "small" in self.model else None
             )
-            raw_content = response.choices[0].message.content
-            # Clean possible markdown blocks if AI ignored 'Only return JSON'
+            raw_content = response.choices[0].message.content.strip()
+            
+            # Cleaning logic
             if "```json" in raw_content:
                 raw_content = raw_content.split("```json")[1].split("```")[0]
             elif "```" in raw_content:
                 raw_content = raw_content.split("```")[1].split("```")[0]
             
-            return json.loads(raw_content.strip())
+            raw_content = raw_content.strip()
+            
+            # Sometimes AI wraps the list in a "questions" key if forced to JSON mode
+            parsed = json.loads(raw_content)
+            if isinstance(parsed, dict) and "questions" in parsed:
+                return parsed["questions"]
+            if isinstance(parsed, list):
+                return parsed
+            
+            raise Exception("AI did not return a valid list of questions")
+            
         except Exception as e:
             print(f"Quiz Generation Error: {e}")
+            print(f"Raw Response Attempt: {raw_content if 'raw_content' in locals() else 'None'}")
             raise e
 
     async def generate_image_keyword(self, text: str) -> str:

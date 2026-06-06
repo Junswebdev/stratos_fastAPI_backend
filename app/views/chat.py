@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional, List
 
 class MessageBase(BaseModel):
-    content: str = Field(..., min_length=1, max_length=2000)
+    content: str = Field(..., min_length=0, max_length=2000)
     recipient_id: Optional[UUID] = None
     course_id: Optional[UUID] = None
     attachment_url: Optional[str] = None
@@ -37,6 +37,6 @@ class MessageReply(BaseModel):
     sender_id: UUID
     sender_name: Optional[str] = None
     sender_avatar_url: Optional[str] = None
-    content: str
+    content: str = Field(..., min_length=0)
     
     model_config = ConfigDict(from_attributes=True)

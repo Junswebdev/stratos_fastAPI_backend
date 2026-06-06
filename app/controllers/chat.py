@@ -19,6 +19,8 @@ from app.models.enrollment import Enrollment, EnrollmentStatus
 from app.models.course import Course
 from app.models.user import User, UserRole
 from app.views.chat import MessageRead, MessageCreate, MessageReply
+from app.controllers.stats import push_user_stats
+from app.utils.cache import invalidate_cache
 
 from app.utils.cloudinary_upload import upload_to_cloudinary
 
@@ -155,16 +157,24 @@ async def websocket_endpoint(
                 db_message.content = new_content
                 db_message.is_edited = datetime.now()
                 db.commit()
-                db.refresh(db_message)
+                
+                # Eagerly reload for payload
+                db_message = db.query(Message).options(
+                    joinedload(Message.sender),
+                    joinedload(Message.reply_to).joinedload(Message.sender),
+                    joinedload(Message.reactions)
+                ).filter(Message.id == db_message.id).first()
                 
                 broadcast_payload = _create_message_payload(db_message, "edit")
                 if db_message.course_id:
-                    enrollments = db.query(Enrollment).filter(Enrollment.course_id == db_message.course_id).all()
-                    u_ids = [e.student_id for e in enrollments]
-                    course = db.query(Course).filter(Course.id == db_message.course_id).first()
-                    if course:
-                        u_ids.append(course.instructor_id)
-                        await manager.broadcast(broadcast_payload, u_ids)
+                    recipients = _get_course_recipients(db, db_message.course_id)
+                    await manager.broadcast(broadcast_payload, recipients)
+                elif db_message.recipient_id:
+                    await manager.broadcast(broadcast_payload, [db_message.sender_id, db_message.recipient_id])
+                    # Notify stats update
+                    peer_id = db_message.recipient_id if db_message.sender_id == current_user.id else db_message.sender_id
+                    invalidate_cache(f"dashboard_{peer_id}")
+                    await push_user_stats(db, peer_id)
                 continue
 
             elif msg_type == "delete":
@@ -179,16 +189,24 @@ async def websocket_endpoint(
                 db_message.is_deleted = datetime.now()
                 db_message.content = "This message was deleted"
                 db.commit()
-                db.refresh(db_message)
+                
+                # Eagerly reload for payload
+                db_message = db.query(Message).options(
+                    joinedload(Message.sender),
+                    joinedload(Message.reply_to).joinedload(Message.sender),
+                    joinedload(Message.reactions)
+                ).filter(Message.id == db_message.id).first()
                 
                 broadcast_payload = _create_message_payload(db_message, "delete")
                 if db_message.course_id:
-                    enrollments = db.query(Enrollment).filter(Enrollment.course_id == db_message.course_id).all()
-                    u_ids = [e.student_id for e in enrollments]
-                    course = db.query(Course).filter(Course.id == db_message.course_id).first()
-                    if course:
-                        u_ids.append(course.instructor_id)
-                        await manager.broadcast(broadcast_payload, u_ids)
+                    recipients = _get_course_recipients(db, db_message.course_id)
+                    await manager.broadcast(broadcast_payload, recipients)
+                elif db_message.recipient_id:
+                    await manager.broadcast(broadcast_payload, [db_message.sender_id, db_message.recipient_id])
+                    # Notify stats update
+                    peer_id = db_message.recipient_id if db_message.sender_id == current_user.id else db_message.sender_id
+                    invalidate_cache(f"dashboard_{peer_id}")
+                    await push_user_stats(db, peer_id)
                 continue
 
             # Standard message or Reply
@@ -223,8 +241,6 @@ async def websocket_endpoint(
             ).filter(Message.id == db_message.id).first()
             
             broadcast_payload = _create_message_payload(db_message, "message")
-            from app.controllers.stats import push_user_stats
-            from app.utils.cache import invalidate_cache
             
             if db_message.course_id:
                 enrollments = db.query(Enrollment).filter(
@@ -242,7 +258,7 @@ async def websocket_endpoint(
                 for uid in user_ids:
                     if uid != user_uuid: # Don't push to sender
                         invalidate_cache(f"dashboard_{uid}")
-                        await push_user_stats(db, UUID(str(uid)))
+                        await push_user_stats(db, uid)
             
             elif db_message.recipient_id:
                 # Direct Message logic
@@ -483,13 +499,13 @@ async def mark_direct_as_read(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Mark all direct messages from a specific user as read.
+    Mark all direct messages from a specific user as read and notify the peer.
     """
     from app.models.message_read_state import MessageReadState
     from app.controllers.stats import push_user_stats
     from app.utils.cache import invalidate_cache
     
-    # Use per-peer DM read state so multiple direct conversations can be tracked independently.
+    now = datetime.now()
     read_state = db.query(MessageReadState).filter(
         MessageReadState.user_id == current_user.id,
         MessageReadState.course_id == None,
@@ -497,23 +513,34 @@ async def mark_direct_as_read(
     ).first()
     
     if not read_state:
-        read_state = MessageReadState(user_id=current_user.id, course_id=None, peer_user_id=other_user_id)
+        read_state = MessageReadState(user_id=current_user.id, course_id=None, peer_user_id=other_user_id, last_read_at=now)
         db.add(read_state)
     else:
-        read_state.last_read_at = datetime.now()
+        read_state.last_read_at = now
         
     db.commit()
     
+    # Notify the peer that we've read their messages
+    await manager.send_personal_message({
+        "type": "read_receipt",
+        "user_id": str(current_user.id),
+        "last_read_at": now.isoformat(),
+        "course_id": None
+    }, other_user_id)
+
     invalidate_cache(f"dashboard_{current_user.id}")
     await push_user_stats(db, UUID(str(current_user.id)))
-    return {"status": "success"}
+    return {"status": "success", "last_read_at": now}
 
-@router.get("/history/direct/{other_user_id}", response_model=List[MessageRead])
+@router.get("/history/direct/{other_user_id}")
 def get_direct_message_history(
     other_user_id: UUID, 
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
+    from app.models.message_read_state import MessageReadState
+    
+    print(f"DEBUG: history request from {current_user.id} for peer {other_user_id}", flush=True)
     messages = db.query(Message).options(
         joinedload(Message.sender),
         joinedload(Message.reply_to).joinedload(Message.sender),
@@ -523,9 +550,25 @@ def get_direct_message_history(
         ((Message.sender_id == other_user_id) & (Message.recipient_id == current_user.id))
     ).order_by(Message.timestamp.asc()).all()
     
-    return [_populate_msg_read(m, db) for m in messages]
+    # Get the other person's read state to see what they've seen
+    peer_read_state = db.query(MessageReadState).filter(
+        MessageReadState.user_id == other_user_id,
+        MessageReadState.course_id == None,
+        MessageReadState.peer_user_id == current_user.id,
+    ).first()
+    
+    peer_last_read = None
+    if peer_read_state and peer_read_state.last_read_at:
+        peer_last_read = peer_read_state.last_read_at.isoformat()
+    
+    response_data = {
+        "messages": [_populate_msg_read(m, db).model_dump(mode='json') for m in messages],
+        "peer_last_read_at": peer_last_read
+    }
+    print(f"DEBUG: history count: {len(response_data['messages'])}", flush=True)
+    return response_data
 
-@router.get("/history/course/{course_id}", response_model=List[MessageRead])
+@router.get("/history/course/{course_id}")
 def get_course_chat_history(
     course_id: UUID, 
     db: Session = Depends(get_db),
@@ -536,19 +579,34 @@ def get_course_chat_history(
         joinedload(Message.reply_to).joinedload(Message.sender),
         joinedload(Message.reactions)
     ).filter(Message.course_id == course_id).order_by(Message.timestamp.asc()).all()
-    return [_populate_msg_read(m, db) for m in messages]
+    
+    return {
+        "messages": [_populate_msg_read(m, db).model_dump(mode='json') for m in messages],
+        "peer_last_read_at": None # Receipts not supported for courses yet
+    }
 
 def _populate_msg_read(m: Message, db: Session) -> MessageRead:
-    msg_read = MessageRead.model_validate(m)
-    msg_read.sender_name = m.sender.full_name if m.sender else "Unknown"
-    msg_read.sender_avatar_url = m.sender.avatar_url if m.sender else None
-    msg_read.attachment_url = m.attachment_url
-    msg_read.attachment_name = m.attachment_name
-    msg_read.attachment_type = m.attachment_type
+    # Manual conversion to avoid validation errors with complex relationships
+    data = {
+        "id": m.id,
+        "sender_id": m.sender_id,
+        "recipient_id": m.recipient_id,
+        "course_id": m.course_id,
+        "content": m.content if not m.is_deleted else "This message was deleted",
+        "attachment_url": m.attachment_url,
+        "attachment_name": m.attachment_name,
+        "attachment_type": m.attachment_type,
+        "timestamp": m.timestamp,
+        "reply_to_id": m.reply_to_id,
+        "is_edited": m.is_edited,
+        "is_deleted": m.is_deleted,
+        "sender_name": m.sender.full_name if m.sender else "Unknown",
+        "sender_avatar_url": m.sender.avatar_url if m.sender else None,
+        "likes": [str(r.user_id) for r in m.reactions if r.reaction_type == 'like'],
+        "dislikes": [str(r.user_id) for r in m.reactions if r.reaction_type == 'dislike'],
+    }
     
-    # Include reactions in history
-    msg_read.likes = [str(r.user_id) for r in m.reactions if r.reaction_type == 'like']
-    msg_read.dislikes = [str(r.user_id) for r in m.reactions if r.reaction_type == 'dislike']
+    msg_read = MessageRead.model_validate(data)
     
     if m.reply_to:
         msg_read.reply_to = MessageReply(
@@ -558,9 +616,6 @@ def _populate_msg_read(m: Message, db: Session) -> MessageRead:
             sender_avatar_url=m.reply_to.sender.avatar_url if m.reply_to.sender else None,
             content=m.reply_to.content if not m.reply_to.is_deleted else "This message was deleted"
         )
-    
-    if m.is_deleted:
-        msg_read.content = "This message was deleted"
         
     return msg_read
 
@@ -590,6 +645,7 @@ def _get_direct_conversation_summaries(db: Session, current_user: User) -> List[
     for peer_id_str, latest_messages in grouped.items():
         latest = latest_messages[0]
         peer_id = UUID(peer_id_str)
+        print(f"DEBUG: Summary for peer {peer_id_str}, latest msg ID: {latest.id}", flush=True)
 
         read_state = db.query(MessageReadState).filter(
             MessageReadState.user_id == current_user.id,
