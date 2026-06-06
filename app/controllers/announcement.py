@@ -113,7 +113,10 @@ def read_announcements(
         
         all_relevant_course_ids = list(set(enrolled_course_ids + instructed_course_ids))
         
-        # Filter: Global (None) OR in relevant courses
+        if not all_relevant_course_ids:
+            return []
+            
+        # Filter: strictly in relevant courses
         return query.filter(
-            (Announcement.course_id == None) | (Announcement.course_id.in_(all_relevant_course_ids))
+            Announcement.course_id.in_(all_relevant_course_ids)
         ).order_by(Announcement.created_at.desc()).all()

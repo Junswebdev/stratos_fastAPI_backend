@@ -57,10 +57,13 @@ def get_dashboard(
         
         relevant_ids = list(set(enrolled_ids + instructed_ids))
         
-        announcements = db.query(Announcement).filter(
-            (Announcement.expires_at == None) | (Announcement.expires_at > now),
-            (Announcement.course_id == None) | (Announcement.course_id.in_(relevant_ids))
-        ).order_by(Announcement.created_at.desc()).limit(10).all()
+        if relevant_ids:
+            announcements = db.query(Announcement).filter(
+                (Announcement.expires_at == None) | (Announcement.expires_at > now),
+                Announcement.course_id.in_(relevant_ids)
+            ).order_by(Announcement.created_at.desc()).limit(10).all()
+        else:
+            announcements = []
         
         # 4. Get Enrolled Courses (Summary)
         user_enrollments_all = db.query(Enrollment).options(
@@ -277,8 +280,12 @@ def calculate_user_stats(db: Session, user: User) -> UserStats:
 
 async def push_user_stats(db: Session, user_id: UUID):
     """
-    Calculate and push updated stats to a user via WebSocket.
+    Calculate and push updated stats to a user via WebSocket, 
+    and invalidate their dashboard cache to ensure the frontend fetches fresh data.
     """
+    from app.utils.cache import invalidate_cache
+    invalidate_cache(f"dashboard_{user_id}")
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return
