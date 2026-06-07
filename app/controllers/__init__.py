@@ -17,7 +17,7 @@ def api_root():
     """
     API root endpoint.
     """
-    return {"message": "Welcome to the Stratos API v1"}
+    return {"message": "Welcome to the Class IQ API v1"}
 
 
 @api_router.get("/health", tags=["System"])
@@ -25,7 +25,7 @@ def health_check():
     """
     Basic health check route to verify the API is running.
     """
-    return {"status": "ok", "message": "Stratos API is up and running."}
+    return {"status": "ok", "message": "Class IQ API is up and running."}
 
 
 # Register individual controllers

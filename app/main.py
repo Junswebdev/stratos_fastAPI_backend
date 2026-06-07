@@ -25,8 +25,8 @@ from datetime import datetime, timezone
 
 # Initialize the FastAPI application
 app = FastAPI(
-    title="Stratos LMS API",
-    description="Backend API for the Stratos Learning Management System, built with a strict MVC pattern.",
+    title="Class IQ API",
+    description="Backend API for the Class IQ Learning Management System, built with a strict MVC pattern.",
     version="0.1.0"
 )
 
