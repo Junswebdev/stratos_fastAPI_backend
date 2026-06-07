@@ -11,6 +11,7 @@ greenlet
 gunicorn
 httpx
 mistralai
+passlib[bcrypt]
 psycopg2-binary
 pydantic[email]
 python-dotenv
