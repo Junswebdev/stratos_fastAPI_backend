@@ -112,10 +112,8 @@ def get_dashboard(
         )
 
 
-    # Cache the dashboard payload per user for 5 minutes. 
-    # Real-time events (like new announcements) should ideally invalidate this cache via 'invalidate_cache'
-    cache_key = f"dashboard_{current_user.id}"
-    return get_cached_or_compute(cache_key, _compute_dashboard)
+    # Calculate dashboard data in real-time to ensure accuracy
+    return _compute_dashboard()
 
 def _get_unread_count(db: Session, user_id: UUID, course_ids: List[UUID]) -> int:
     # 1. Course Messages

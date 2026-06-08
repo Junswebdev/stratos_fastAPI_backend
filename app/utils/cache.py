@@ -1,9 +1,10 @@
 from cachetools import TTLCache
 
 # In-memory caching for smaller applications
-# Caches up to 1000 items with a Time-To-Live (TTL) of 300 seconds (5 minutes)
-# Great for caching database lookup results like course lists or stats
-api_cache = TTLCache(maxsize=1000, ttl=300)
+# Caches up to 1000 items with a short Time-To-Live (TTL) of 30 seconds
+# A shorter TTL ensures data stays fresh (especially on mobile) while still
+# protecting the server from rapid, duplicate frontend re-renders.
+api_cache = TTLCache(maxsize=1000, ttl=30)
 
 def get_cached_or_compute(key: str, compute_func):
     """
