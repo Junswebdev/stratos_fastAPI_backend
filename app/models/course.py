@@ -21,7 +21,7 @@ class Course(Base):
 
     # Relationships
     instructor = relationship("User", back_populates="courses_taught")
-    modules = relationship("Module", back_populates="course", cascade="all, delete-orphan")
+    modules = relationship("Module", back_populates="course", cascade="all, delete-orphan", order_by="Module.order")
     enrollments = relationship("Enrollment", back_populates="course", cascade="all, delete-orphan")
     messages = relationship("Message", back_populates="course", cascade="all, delete-orphan")
     announcements = relationship("Announcement", back_populates="course", cascade="all, delete-orphan")
@@ -38,4 +38,4 @@ class Module(Base):
     
     # Relationships
     course = relationship("Course", back_populates="modules")
-    lessons = relationship("Lesson", back_populates="module", cascade="all, delete-orphan")
+    lessons = relationship("Lesson", back_populates="module", cascade="all, delete-orphan", order_by="Lesson.order")
